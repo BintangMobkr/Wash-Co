@@ -36,7 +36,7 @@ py -m venv .venv
 - **Pelanggan**
   - Daftar pelanggan, jumlah pesanan, total belanja, dan pesanan terakhir.
 - **Struk**
-  - Struk pesanan lengkap dan unduh struk dalam format `.txt`.
+  - Struk pesanan lengkap dan unduh struk dalam format `.pdf`.
 
 ## Tarif awal
 

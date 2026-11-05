@@ -3,10 +3,24 @@
 import re
 import sqlite3
 from datetime import date, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import pandas as pd
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "washco.db"
@@ -416,52 +430,170 @@ def render_struk(kode):
             st.metric("Total", rupiah(order["total"]))
 
     st.download_button(
-        "Unduh struk (.txt)",
-        data=buat_teks_struk(order, details),
-        file_name=f"struk-{order['kode']}.txt",
-        mime="text/plain",
+        "Unduh struk (.pdf)",
+        data=buat_pdf_struk(order, details),
+        file_name=f"struk-{order['kode']}.pdf",
+        mime="application/pdf",
         key=f"unduh_{order['kode']}",
     )
 
 
-def buat_teks_struk(order, details):
-    garis = "=" * 46
-    lines = [
-        garis,
-        "                 WASH&CO",
-        "     Pemesanan dan pencatatan laundry",
-        garis,
-        f"Kode pesanan : {order['kode']}",
-        f"Tanggal      : {waktu_indo(order['dibuat_pada'])}",
-        f"Pelanggan    : {order['nama']}",
-        f"Telepon      : {order['telepon']}",
-        f"Alamat       : {order['alamat']}",
-        f"Jenis        : {order['jenis']}",
-        "-" * 46,
-        "Rincian layanan:",
-    ]
-    for detail in details:
-        subtotal = int(round(detail["harga_per_kg"] * order["berat"]))
-        lines.append(
-            f"- {detail['nama']} ({rupiah(detail['harga_per_kg'])}/kg "
-            f"x {order['berat']:.1f} kg) = {rupiah(subtotal)}"
+def buat_pdf_struk(order, details):
+    buffer = BytesIO()
+    styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptTitle",
+            parent=styles["Title"],
+            alignment=TA_CENTER,
+            textColor=colors.HexColor("#1f2937"),
+            spaceAfter=2,
         )
-    lines.extend(
+    )
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptSubtitle",
+            parent=styles["Normal"],
+            alignment=TA_CENTER,
+            textColor=colors.HexColor("#6b7280"),
+            spaceAfter=14,
+        )
+    )
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=20 * mm,
+        leftMargin=20 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+        title=f"Struk {order['kode']} - Wash&Co",
+        author="Wash&Co",
+    )
+    story = [
+        Paragraph("Wash&amp;Co", styles["ReceiptTitle"]),
+        Paragraph("Struk laundry", styles["ReceiptSubtitle"]),
+        Paragraph(
+            f"<b>Kode pesanan:</b> {escape(str(order['kode']))}"
+            f"&nbsp;&nbsp;&nbsp; <b>Tanggal:</b> "
+            f"{escape(waktu_indo(order['dibuat_pada']))}",
+            styles["Normal"],
+        ),
+        Spacer(1, 8),
+    ]
+
+    customer_rows = [
+        ["Pelanggan", Paragraph(escape(str(order["nama"])), styles["Normal"])],
         [
-            "-" * 46,
-            f"Biaya layanan : {rupiah(order['total'] - order['biaya_antar'])}",
-            f"Biaya antar   : {rupiah(order['biaya_antar'])}",
-            f"TOTAL         : {rupiah(order['total'])}",
-            f"Metode bayar  : {order['metode_bayar']} ({order['status_bayar']})",
-            f"Status        : {order['status_pesanan']}",
-            f"Estimasi      : {tanggal_indo(order['estimasi_selesai'])}",
-            f"Catatan       : {order['catatan'] or '-'}",
-            garis,
-            "Terima kasih telah menggunakan layanan Wash&Co.",
-            garis,
+            "Telepon / WhatsApp",
+            Paragraph(escape(str(order["telepon"])), styles["Normal"]),
+        ],
+        ["Alamat", Paragraph(escape(str(order["alamat"])), styles["Normal"])],
+        [
+            "Jenis pelanggan",
+            Paragraph(escape(str(order["jenis"])), styles["Normal"]),
+        ],
+    ]
+    customer_table = Table(customer_rows, colWidths=[42 * mm, 128 * mm])
+    customer_table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#6b7280")),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("LINEBELOW", (0, -1), (-1, -1), 0.6, colors.HexColor("#d1d5db")),
+            ]
+        )
+    )
+    story.extend(
+        [
+            customer_table,
+            Spacer(1, 14),
+            Paragraph("Rincian layanan", styles["Heading3"]),
         ]
     )
-    return "\n".join(lines)
+
+    detail_rows = [["Layanan", "Harga/kg", "Berat", "Subtotal"]]
+    for detail in details:
+        detail_rows.append(
+            [
+                Paragraph(escape(str(detail["nama"])), styles["Normal"]),
+                rupiah(detail["harga_per_kg"]),
+                f"{order['berat']:.1f} kg",
+                rupiah(detail["harga_per_kg"] * order["berat"]),
+            ]
+        )
+    detail_table = Table(
+        detail_rows,
+        colWidths=[66 * mm, 32 * mm, 27 * mm, 45 * mm],
+        repeatRows=1,
+    )
+    detail_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#374151")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d1d5db")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    story.extend([detail_table, Spacer(1, 14)])
+
+    totals_rows = [
+        ["Biaya layanan", rupiah(order["total"] - order["biaya_antar"])],
+        ["Biaya antar", rupiah(order["biaya_antar"])],
+        ["TOTAL", rupiah(order["total"])],
+    ]
+    totals_table = Table(totals_rows, colWidths=[130 * mm, 40 * mm])
+    totals_table.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LINEABOVE", (0, -1), (-1, -1), 0.8, colors.HexColor("#9ca3af")),
+                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, -1), (-1, -1), 12),
+            ]
+        )
+    )
+    story.extend(
+        [
+            totals_table,
+            Spacer(1, 12),
+            Paragraph(
+                f"<b>Estimasi selesai:</b> "
+                f"{escape(tanggal_indo(order['estimasi_selesai']))}",
+                styles["Normal"],
+            ),
+            Paragraph(
+                f"<b>Status pesanan:</b> {escape(str(order['status_pesanan']))}",
+                styles["Normal"],
+            ),
+            Paragraph(
+                f"<b>Pembayaran:</b> {escape(str(order['metode_bayar']))} - "
+                f"{escape(str(order['status_bayar']))}",
+                styles["Normal"],
+            ),
+            Paragraph(
+                f"<b>Catatan:</b> {escape(str(order['catatan'] or '-'))}",
+                styles["Normal"],
+            ),
+            Spacer(1, 18),
+            Paragraph(
+                "Terima kasih telah menggunakan layanan Wash&amp;Co.",
+                styles["ReceiptSubtitle"],
+            ),
+        ]
+    )
+    doc.build(story)
+    return buffer.getvalue()
 
 
 def render_dashboard():
